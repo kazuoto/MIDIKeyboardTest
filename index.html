@@ -2,18 +2,27 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>MIDI + Tone.js Salamander Piano</title>
+  <title>Low Latency MIDI + Tone.js Sample</title>
 </head>
 <body>
-  <h1>MIDI + Tone.js ピアノ音源サンプルにゃ (Salamander)</h1>
+  <h1>低遅延(っぽい) MIDI + Tone.js ピアノ音源にゃ</h1>
+  <!-- ボタンを押すとMIDIアクセス＆オーディオContext開始にゃ -->
   <button id="requestMIDI">MIDI使用許可をリクエストするにゃ</button>
 
   <!-- Tone.js CDN -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.27/Tone.min.js"></script>
 
   <script>
-    // まずはSamplerを作るにゃ
-    // Salamander Pianoの音源ファイル(A0～C8まで)が下記URLに置かれてる
+    // 1. latencyHint: 'interactive' なAudioContextを自作
+    const lowLatencyContext = new AudioContext({
+      latencyHint: 'interactive'
+    });
+
+    // 2. Tone.jsが使うオーディオコンテキストを置き換え
+    Tone.setContext(lowLatencyContext);
+
+    // 3. Tone.Samplerで「Salamander Piano」音源を読み込む
+    //    (C3, C4, C5とかじゃなくて、いっぱい音源があるやつにゃ)
     const sampler = new Tone.Sampler({
       urls: {
         "A0": "A0.mp3",
@@ -44,13 +53,13 @@
         "C7": "C7.mp3",
         "D#7": "Ds7.mp3",
         "F#7": "Fs7.mp3",
-        "A7": "A7.mp3",
+        "A7": "A7.mp3"
       },
       release: 1,
-      baseUrl: "https://tonejs.github.io/audio/salamander/" // SalamanderのURLにゃ
+      baseUrl: "https://tonejs.github.io/audio/salamander/"
     }).toDestination();
 
-    // MIDIノート番号→音名に変換する関数にゃ
+    // MIDIノート番号→音名に変換する簡単な関数にゃ
     function midiToNoteName(midiNote) {
       const noteNames = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
       const octave = Math.floor(midiNote / 12) - 1;
@@ -59,10 +68,12 @@
     }
 
     document.getElementById('requestMIDI').addEventListener('click', async () => {
-      // ユーザー操作でAudioContextを解除
+      // 4. ユーザー操作でAudioContextを「resume」 (Chromeなどで必要)
+      //    Tone.start() すると内部のAudioContextがunlockedされるにゃ
       await Tone.start();
-      console.log("AudioContextスタートにゃ！");
+      console.log("AudioContextがスタートにゃ！", lowLatencyContext.state);
 
+      // 5. MIDIアクセス
       navigator.requestMIDIAccess()
         .then((midiAccess) => {
           alert("MIDIアクセス成功にゃ！弾いてみてにゃ～🐱");
@@ -71,12 +82,12 @@
             input.onmidimessage = (msg) => {
               const [status, data1, data2] = msg.data;
               const command = status & 0xf0;
-
               if (command === 0x90) { // Note On
                 if (data2 > 0) {
-                  sampler.triggerAttack(midiToNoteName(data1), undefined, data2/127);
+                  // velocityを第3引数にセット (0～1に正規化)
+                  sampler.triggerAttack(midiToNoteName(data1), undefined, data2 / 127);
                 } else {
-                  // velocity=0ならNoteOff扱い
+                  // velocity=0ならNoteOffと同じ扱い
                   sampler.triggerRelease(midiToNoteName(data1));
                 }
               } else if (command === 0x80) { // Note Off
