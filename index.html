@@ -2,70 +2,85 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>MIDI + Tone.js Piano</title>
+  <title>MIDI + Tone.js Salamander Piano</title>
 </head>
 <body>
-  <h1>MIDI + Tone.js ピアノ音源サンプルにゃ</h1>
-  <!-- Tone.jsのCDNを読み込みにゃ -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.27/Tone.min.js"></script>
-
+  <h1>MIDI + Tone.js ピアノ音源サンプルにゃ (Salamander)</h1>
   <button id="requestMIDI">MIDI使用許可をリクエストするにゃ</button>
 
+  <!-- Tone.js CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.27/Tone.min.js"></script>
+
   <script>
-    // Tone.Samplerでピアノ音源を作るにゃ
-    // ここではGoogleが公開してるSGM SoundFontからピアノサンプルを一部拝借する例にゃ
-    // baseUrlのパス先にC3.mp3とかC4.mp3みたいなファイルが置いてあるにゃ
+    // まずはSamplerを作るにゃ
+    // Salamander Pianoの音源ファイル(A0～C8まで)が下記URLに置かれてる
     const sampler = new Tone.Sampler({
       urls: {
+        "A0": "A0.mp3",
+        "C1": "C1.mp3",
+        "D#1": "Ds1.mp3",
+        "F#1": "Fs1.mp3",
+        "A1": "A1.mp3",
+        "C2": "C2.mp3",
+        "D#2": "Ds2.mp3",
+        "F#2": "Fs2.mp3",
+        "A2": "A2.mp3",
         "C3": "C3.mp3",
+        "D#3": "Ds3.mp3",
+        "F#3": "Fs3.mp3",
+        "A3": "A3.mp3",
         "C4": "C4.mp3",
-        "C5": "C5.mp3"
+        "D#4": "Ds4.mp3",
+        "F#4": "Fs4.mp3",
+        "A4": "A4.mp3",
+        "C5": "C5.mp3",
+        "D#5": "Ds5.mp3",
+        "F#5": "Fs5.mp3",
+        "A5": "A5.mp3",
+        "C6": "C6.mp3",
+        "D#6": "Ds6.mp3",
+        "F#6": "Fs6.mp3",
+        "A6": "A6.mp3",
+        "C7": "C7.mp3",
+        "D#7": "Ds7.mp3",
+        "F#7": "Fs7.mp3",
+        "A7": "A7.mp3",
       },
-      release: 1, // 離した時の余韻にゃ
-      baseUrl: "https://storage.googleapis.com/magentadata/js/soundfonts/sgm_plus/"
+      release: 1,
+      baseUrl: "https://tonejs.github.io/audio/salamander/" // SalamanderのURLにゃ
     }).toDestination();
 
-    // MIDIノート番号 → 音名("C3"など)に変換する関数にゃ
-    // 例: 60 -> C4, 61 -> C#4 みたいな感じで変換するにゃ
+    // MIDIノート番号→音名に変換する関数にゃ
     function midiToNoteName(midiNote) {
-      // 音名テーブルを作るにゃ
       const noteNames = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
       const octave = Math.floor(midiNote / 12) - 1;
       const note = noteNames[midiNote % 12];
       return note + octave;
     }
 
-    // ボタン押したらMIDIアクセスを取得して、MIDIイベントを拾うようにするにゃ
     document.getElementById('requestMIDI').addEventListener('click', async () => {
-      // AudioContextを有効化するにはユーザーアクションが必要だから、最初にTone.start()しておくにゃ
+      // ユーザー操作でAudioContextを解除
       await Tone.start();
-      console.log("AudioContextがスタートにゃ！");
+      console.log("AudioContextスタートにゃ！");
 
-      // navigator.requestMIDIAccess()でMIDI許可をもらうにゃ
       navigator.requestMIDIAccess()
         .then((midiAccess) => {
-          alert("MIDIアクセス成功にゃ！キーボード弾いてみてにゃ～🐱");
+          alert("MIDIアクセス成功にゃ！弾いてみてにゃ～🐱");
 
-          // 入力デバイスを取得してメッセージを監視するにゃ
           for (let input of midiAccess.inputs.values()) {
-            input.onmidimessage = (message) => {
-              const [status, data1, data2] = message.data;
+            input.onmidimessage = (msg) => {
+              const [status, data1, data2] = msg.data;
               const command = status & 0xf0;
 
               if (command === 0x90) { // Note On
                 if (data2 > 0) {
-                  // velocityが0じゃないときはNoteOnにゃ
-                  const noteName = midiToNoteName(data1);
-                  // Tone.jsのSamplerでnoteを鳴らすにゃ
-                  sampler.triggerAttack(noteName, undefined, data2 / 127);
+                  sampler.triggerAttack(midiToNoteName(data1), undefined, data2/127);
                 } else {
-                  // velocity=0のときはNoteOff扱いにゃ
-                  const noteName = midiToNoteName(data1);
-                  sampler.triggerRelease(noteName);
+                  // velocity=0ならNoteOff扱い
+                  sampler.triggerRelease(midiToNoteName(data1));
                 }
               } else if (command === 0x80) { // Note Off
-                const noteName = midiToNoteName(data1);
-                sampler.triggerRelease(noteName);
+                sampler.triggerRelease(midiToNoteName(data1));
               }
             };
           }
