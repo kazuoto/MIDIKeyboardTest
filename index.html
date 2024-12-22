@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>MIDI + Tone.js Piano</title>
+</head>
+<body>
+  <h1>MIDI + Tone.js ピアノ音源サンプルにゃ</h1>
+  <!-- Tone.jsのCDNを読み込みにゃ -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.27/Tone.min.js"></script>
+
+  <button id="requestMIDI">MIDI使用許可をリクエストするにゃ</button>
+
+  <script>
+    // Tone.Samplerでピアノ音源を作るにゃ
+    // ここではGoogleが公開してるSGM SoundFontからピアノサンプルを一部拝借する例にゃ
+    // baseUrlのパス先にC3.mp3とかC4.mp3みたいなファイルが置いてあるにゃ
+    const sampler = new Tone.Sampler({
+      urls: {
+        "C3": "C3.mp3",
+        "C4": "C4.mp3",
+        "C5": "C5.mp3"
+      },
+      release: 1, // 離した時の余韻にゃ
+      baseUrl: "https://storage.googleapis.com/magentadata/js/soundfonts/sgm_plus/"
+    }).toDestination();
+
+    // MIDIノート番号 → 音名("C3"など)に変換する関数にゃ
+    // 例: 60 -> C4, 61 -> C#4 みたいな感じで変換するにゃ
+    function midiToNoteName(midiNote) {
+      // 音名テーブルを作るにゃ
+      const noteNames = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+      const octave = Math.floor(midiNote / 12) - 1;
+      const note = noteNames[midiNote % 12];
+      return note + octave;
+    }
+
+    // ボタン押したらMIDIアクセスを取得して、MIDIイベントを拾うようにするにゃ
+    document.getElementById('requestMIDI').addEventListener('click', async () => {
+      // AudioContextを有効化するにはユーザーアクションが必要だから、最初にTone.start()しておくにゃ
+      await Tone.start();
+      console.log("AudioContextがスタートにゃ！");
+
+      // navigator.requestMIDIAccess()でMIDI許可をもらうにゃ
+      navigator.requestMIDIAccess()
+        .then((midiAccess) => {
+          alert("MIDIアクセス成功にゃ！キーボード弾いてみてにゃ～🐱");
+
+          // 入力デバイスを取得してメッセージを監視するにゃ
+          for (let input of midiAccess.inputs.values()) {
+            input.onmidimessage = (message) => {
+              const [status, data1, data2] = message.data;
+              const command = status & 0xf0;
+
+              if (command === 0x90) { // Note On
+                if (data2 > 0) {
+                  // velocityが0じゃないときはNoteOnにゃ
+                  const noteName = midiToNoteName(data1);
+                  // Tone.jsのSamplerでnoteを鳴らすにゃ
+                  sampler.triggerAttack(noteName, undefined, data2 / 127);
+                } else {
+                  // velocity=0のときはNoteOff扱いにゃ
+                  const noteName = midiToNoteName(data1);
+                  sampler.triggerRelease(noteName);
+                }
+              } else if (command === 0x80) { // Note Off
+                const noteName = midiToNoteName(data1);
+                sampler.triggerRelease(noteName);
+              }
+            };
+          }
+        })
+        .catch((err) => {
+          console.error("MIDIアクセス失敗にゃ…", err);
+          alert("MIDIアクセスが拒否または失敗したにゃ…");
+        });
+    });
+  </script>
+</body>
+</html>
