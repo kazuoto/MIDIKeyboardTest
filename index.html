@@ -10,8 +10,8 @@
   <!-- マスター音量スライダー (0～3倍)。初期値2.0 -->
   <p>
     <label for="volumeSlider">Master Volume:</label>
-    <input id="volumeSlider" type="range" min="0" max="3" step="0.01" value="2" />
-    <span id="volumeValue">2.00</span>
+    <input id="volumeSlider" type="range" min="0" max="5" step="0.01" value="3" />
+    <span id="volumeValue">3.00</span>
   </p>
 
   <button id="startBtn">オーディオ＆MIDI開始にゃ</button>
@@ -74,14 +74,14 @@
 
                 // Attack
                 inAttack: true,
-                attackTime: 0.1,  // 0.1秒
+                attackTime: 0.05,  // 0.1秒
                 attackStartPos: 0,
                 attackStartAmp: 0,
                 targetAmp: targetAmp,
 
                 // Release
                 inRelease: false,
-                releaseTime: 1.0,
+                releaseTime: 0.5,
                 releaseStartPos: 0,
                 releaseStartAmp: 0,
 
