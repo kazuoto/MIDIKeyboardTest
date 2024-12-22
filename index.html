@@ -2,118 +2,216 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>AudioWorklet Sample Piano-ish</title>
+  <title>AudioWorklet Multi-Sample Piano-ish</title>
 </head>
 <body>
-  <h1>AudioWorkletでサンプル音源再生にゃ(超簡易版)</h1>
+  <h1>AudioWorkletで複数ピアノサンプル再生にゃ(なんちゃって版)</h1>
   <button id="startBtn">オーディオ＆MIDI開始にゃ</button>
 
   <script>
     /* 
-      ★★★ 事前に"サンプル音"を1個用意しておくにゃ ★★★
-      ここでは「C4のピアノ音」を想定し、
-      下記URLから適当にダウンロードした「C4.mp3」を使う例にするにゃ。
-      あるいは自分のMP3ファイルをURLに指定してにゃ。
+      ★★★ Salamander Piano の一部キーをピックアップして使うにゃ ★★★
 
-      下は「Salamander Piano」内のC4のURLサンプル例 (ちょっと長い):
-      "https://tonejs.github.io/audio/salamander/C4.mp3"
+      下は「Tone.jsのSampler」でよく見るマッピングを流用してるけど、フルで全部は多いので
+      A0, C1, D#1, F#1, A1, C2, ... A7 など、ある程度間引いてあるにゃ。
+      これで全キーをカバーするには「近いサンプル」を使って再生速度を変えてピッチシフトするにゃ。
     */
-    const SAMPLE_URL = "https://tonejs.github.io/audio/salamander/C4.mp3";
+    const sampleMap = {
+      "A0": "A0.mp3",
+      "C1": "C1.mp3",
+      "Ds1": "Ds1.mp3",
+      "Fs1": "Fs1.mp3",
+      "A1": "A1.mp3",
+      "C2": "C2.mp3",
+      "Ds2": "Ds2.mp3",
+      "Fs2": "Fs2.mp3",
+      "A2": "A2.mp3",
+      "C3": "C3.mp3",
+      "Ds3": "Ds3.mp3",
+      "Fs3": "Fs3.mp3",
+      "A3": "A3.mp3",
+      "C4": "C4.mp3",
+      "Ds4": "Ds4.mp3",
+      "Fs4": "Fs4.mp3",
+      "A4": "A4.mp3",
+      "C5": "C5.mp3",
+      "Ds5": "Ds5.mp3",
+      "Fs5": "Fs5.mp3",
+      "A5": "A5.mp3",
+      "C6": "C6.mp3",
+      "Ds6": "Ds6.mp3",
+      "Fs6": "Fs6.mp3",
+      "A6": "A6.mp3",
+      "C7": "C7.mp3",
+      "Ds7": "Ds7.mp3",
+      "Fs7": "Fs7.mp3",
+      "A7": "A7.mp3",
+    };
+    // 上記のキー(A0, C1, Ds1...)をノート番号に変換したいので表を作るにゃ
+    // 例: A0 = 21, C1=24, Ds1=27, Fs1=30... A7=105
+    // 下で一括で作るから、とりあえずマップだけ用意
 
-    // ★ AudioWorkletProcessorの実装を文字列で用意する (本来は別ファイルが理想)
+    // まとめてダウンロードする元URL
+    const baseUrl = "https://tonejs.github.io/audio/salamander/";
+
+    // ★ AudioWorkletProcessorの実装を文字列で用意する (本来は別ファイルが理想だにゃ)
     const workletCode = `
-      class SamplePlayerProcessor extends AudioWorkletProcessor {
+      class MultiSampleProcessor extends AudioWorkletProcessor {
         constructor() {
           super();
-          // サンプリングデータをFloat32Arrayで保持するにゃ(モノラル前提)
-          this.sampleData = null;
-          this.sampleRateHost = sampleRate; // ホスト側のサンプルレート
-          this.voices = {}; // noteNumberごとに再生ステータスを持つにゃ
+          // { noteNumber: { sampleData: Float32Array, rate: number }, ... }
+          // ただし実際は複数サンプルを使い分けるにゃ(近いキーを選ぶ)
+          this.samples = {};  // noteNumber -> Float32Array
+          this.voices = {};   // 現在再生中のボイス
 
-          // port.onmessage でメインスレッドからのデータや命令を受け取るにゃ
           this.port.onmessage = (e) => {
             const msg = e.data;
-            if (msg.type === "loadSample") {
-              // サンプルロード完了データ (Float32Array) を受け取って保存
-              this.sampleData = msg.buffer;
+            if (msg.type === "loadedSamples") {
+              // msg.data => { noteNumber: Float32Array, ... }
+              this.samples = msg.samples;
             } else if (msg.type === "noteOn") {
-              // 再生開始
-              const noteNumber = msg.noteNumber;
-              // 位置を0にして再生開始するにゃ
-              // velocityは一旦無視して一定音量にするか、
-              // ここで声ごとにゲイン管理してもOK
+              const { noteNumber, velocity, nearestNote } = msg;
+              // ボイス作成
+              // position=0, sample= this.samples[nearestNote], playbackRate = freqRatio
               this.voices[noteNumber] = {
                 position: 0,
-                // サンプル本来のピッチはC4(60) → freq=261.63Hzくらい
-                // その周波数比で再生速度を決めるにゃ
-                playbackRate: Math.pow(2, (noteNumber - 60) / 12)
+                sampleData: this.samples[nearestNote],
+                playbackRate: Math.pow(2, (noteNumber - nearestNote) / 12),
+                velocity: velocity / 127,
               };
             } else if (msg.type === "noteOff") {
-              // ボイスを消す(簡易実装で即停止)
-              const noteNumber = msg.noteNumber;
-              delete this.voices[noteNumber];
+              delete this.voices[msg.noteNumber];
             }
           };
         }
 
         process(inputs, outputs, parameters) {
           const output = outputs[0];
-          const channelData = output[0]; // モノラル出力
+          const channelData = output[0];
 
-          if (!this.sampleData) {
-            // サンプル未ロードなら全部0クリア
-            channelData.fill(0);
+          channelData.fill(0);
+
+          // サンプルが読み込まれてないなら無音
+          if (!this.samples || Object.keys(this.samples).length === 0) {
             return true;
           }
 
-          // 1サンプルごとに全てのvoiceを合成して書き込むにゃ
           for (let i = 0; i < channelData.length; i++) {
             let out = 0;
-            for (let noteNumber in this.voices) {
-              const voice = this.voices[noteNumber];
-              // voice.position が整数じゃないから、小数部分をfloorしてサンプル参照
-              const idx = Math.floor(voice.position);
+            for (const noteNumber in this.voices) {
+              const v = this.voices[noteNumber];
+              const buf = v.sampleData;
+              if (!buf) continue;
 
-              // サンプル音が終端を超えたらループしないで止める
-              if (idx >= this.sampleData.length) {
-                // 止める
+              const idx = v.position;
+              const idxInt = Math.floor(idx);
+              const idxFrac = idx - idxInt;
+
+              // 再生終了チェック
+              if (idxInt >= buf.length - 1) {
+                // 終わったら削除
                 delete this.voices[noteNumber];
                 continue;
               }
 
-              // とりあえず線形補間なしで近似値を取る(ガクガク音程だが…)
-              const sampleVal = this.sampleData[idx];
+              // 線形補間(左サンプル, 右サンプル)
+              const s1 = buf[idxInt];
+              const s2 = buf[idxInt + 1] || 0;
+              const sampleVal = s1 + (s2 - s1) * idxFrac;
 
-              out += sampleVal; // velocityや音量は一旦無視して合計
+              out += sampleVal * v.velocity;
 
-              // 再生速度に応じてpositionを進める
-              voice.position += voice.playbackRate;
+              // 再生速度に応じて進める
+              v.position += v.playbackRate;
             }
-            // 出力
-            channelData[i] = out * 0.3; // 全体音量ちょい下げ
+            channelData[i] = out * 0.5; // 全体音量少し下げ
           }
 
           return true;
         }
       }
 
-      registerProcessor('sample-player-processor', SamplePlayerProcessor);
+      registerProcessor('multi-sample-processor', MultiSampleProcessor);
     `;
 
+    // デコード後に { noteNumber: Float32Array } を作るための変数
     let audioCtx;
     let sampleNode;
     let sampleGain;
 
-    // サンプルをロードしてFloat32Arrayにする関数
-    async function loadSample(url) {
-      const res = await fetch(url);
-      const arrayBuffer = await res.arrayBuffer();
-      // AudioContextでdecodeAudioDataしてステレオ→モノラルに変換してFloat32Arrayへ
-      const audioBuf = await audioCtx.decodeAudioData(arrayBuffer);
-      // まずはLチャンネルだけ抽出(本当はステレオ合成もやろうと思えばできる)
-      const chData = audioBuf.getChannelData(0);
-      // そのままFloat32ArrayでOK
-      return chData;
+    // MIDI開始
+    async function startMIDI() {
+      const midiAccess = await navigator.requestMIDIAccess();
+      for (let input of midiAccess.inputs.values()) {
+        input.onmidimessage = (msg) => {
+          const [status, data1, data2] = msg.data;
+          const command = status & 0xf0;
+          if (command === 0x90 && data2 > 0) {
+            // NoteOn
+            noteOn(data1, data2);
+          } else if (command === 0x80 || (command === 0x90 && data2 === 0)) {
+            // NoteOff
+            noteOff(data1);
+          }
+        };
+      }
+    }
+
+    // NoteOn
+    function noteOn(noteNumber, velocity) {
+      // 近いサンプル(= 最も近いkey)を探す
+      const nearestSampleNote = findNearestSample(noteNumber);
+      sampleNode.port.postMessage({
+        type: "noteOn",
+        noteNumber,
+        velocity,
+        nearestNote: nearestSampleNote
+      });
+    }
+
+    // NoteOff
+    function noteOff(noteNumber) {
+      sampleNode.port.postMessage({
+        type: "noteOff",
+        noteNumber
+      });
+    }
+
+    // 事前に作っておく: sampleNoteMap (例: { 21: "A0.mp3", 24: "C1.mp3", ... })
+    let sampleNoteMap = {};
+    let sortedSampleNotes = [];
+
+    // 近いサンプルを探す関数
+    function findNearestSample(midiNote) {
+      // 例: sortedSampleNotes = [21, 24, 27, 30, 33, ...] みたいな配列
+      let nearest = sortedSampleNotes[0];
+      let minDist = Infinity;
+      for (const sn of sortedSampleNotes) {
+        const dist = Math.abs(sn - midiNote);
+        if (dist < minDist) {
+          minDist = dist;
+          nearest = sn;
+        }
+      }
+      return nearest;
+    }
+
+    // サンプル複数をロードして decodeAudioData → Float32Array化
+    async function loadAllSamples() {
+      const samples = {};
+      // Object.keys(sampleNoteMap) => [ "21", "24", "27", ... ]
+      const noteNumbers = Object.keys(sampleNoteMap).map(n => parseInt(n));
+      for (let nn of noteNumbers) {
+        const url = sampleNoteMap[nn]; // 完全URL
+        // fetch & decode
+        const resp = await fetch(url);
+        const buf = await resp.arrayBuffer();
+        const audioBuf = await audioCtx.decodeAudioData(buf);
+        // モノラルでいいから Lチャネル取る
+        const chData = audioBuf.getChannelData(0);
+        samples[nn] = chData;
+      }
+      return samples;
     }
 
     async function startAudioWorklet() {
@@ -124,51 +222,66 @@
         URL.createObjectURL(new Blob([workletCode], {type: 'application/javascript'}))
       );
       // Node作成
-      sampleNode = new AudioWorkletNode(audioCtx, 'sample-player-processor');
+      sampleNode = new AudioWorkletNode(audioCtx, 'multi-sample-processor');
 
       // マスターゲイン
       sampleGain = audioCtx.createGain();
       sampleGain.gain.value = 1.0; // 全音量
       sampleNode.connect(sampleGain).connect(audioCtx.destination);
 
-      // サンプルをロードしてAudioWorkletに送るにゃ
-      const sampleData = await loadSample(SAMPLE_URL);
+      // 全サンプルをロードしてDictionary作成
+      const loaded = await loadAllSamples();
+      // AudioWorkletNodeに「loadedSamples」でまとめて送る
       sampleNode.port.postMessage({
-        type: "loadSample",
-        buffer: sampleData
+        type: "loadedSamples",
+        samples: loaded
       });
     }
 
-    // MIDI処理
-    async function startMIDI() {
-      const midiAccess = await navigator.requestMIDIAccess();
-      for (let input of midiAccess.inputs.values()) {
-        input.onmidimessage = (msg) => {
-          const [status, data1, data2] = msg.data;
-          const command = status & 0xf0;
-          if (command === 0x90 && data2 > 0) {
-            // NoteOn
-            sampleNode.port.postMessage({
-              type: "noteOn",
-              noteNumber: data1
-            });
-          } else if (command === 0x80 || (command === 0x90 && data2 === 0)) {
-            // NoteOff
-            sampleNode.port.postMessage({
-              type: "noteOff",
-              noteNumber: data1
-            });
-          }
-        };
-      }
-    }
-
+    // ユーザーがボタン押したら起動
     document.getElementById('startBtn').addEventListener('click', async () => {
+      // 1) sampleNoteMap を作る (キー文字列→noteNumber)
+      setupSampleMap();
+      // 2) AudioWorklet起動 & サンプルロード
       await startAudioWorklet();
       await audioCtx.resume();
+      // 3) MIDI開始
       await startMIDI();
       alert("AudioWorkletサンプラー起動にゃ！キーボード弾いてみてにゃ～🐱");
     });
+
+    function setupSampleMap() {
+      // sampleMapは { "A0": "A0.mp3", "C1": "C1.mp3", ...}
+      // これを noteNumber に変換し、例えば 21 -> "https://tonejs.github.io/audio/salamander/A0.mp3" にしたいにゃ
+      for (let key in sampleMap) {
+        // keyは"A0","C1","Ds1"など。まずnoteNumberに変換する
+        const nn = noteNameToMidi(key);
+        const file = sampleMap[key];
+        // フルURL
+        const fullUrl = baseUrl + file;
+        sampleNoteMap[nn] = fullUrl;
+      }
+      // sortedSampleNotes = [21,24,27,30,...]のようにソートしとく
+      sortedSampleNotes = Object.keys(sampleNoteMap).map(n => parseInt(n)).sort((a,b)=>a-b);
+    }
+
+    // "A0"など→ノート番号
+    function noteNameToMidi(noteName) {
+      // 例: "A0" -> 21
+      // "C4" -> 60, "Ds4" -> 63, ...
+      const table = {
+        "C": 0, "C#":1, "Db":1, "D":2, "D#":3, "Eb":3, "E":4, "F":5, "F#":6, "Gb":6,
+        "G":7, "G#":8, "Ab":8, "A":9, "A#":10, "Bb":10, "B":11
+      };
+      // noteNameをパース: "A0" => note="A", octave="0", or "Ds4" => note="Ds", octave="4"
+      // 2文字か3文字かのパターンがあるからちょっと工夫
+      let match = noteName.match(/^([A-G][#s]?)(\d+)/);
+      if (!match) { return 60; } // fallback C4
+      let noteStr = match[1].replace("s", "#"); // "Ds" -> "D#"
+      let octave = parseInt(match[2], 10);
+      let semitone = table[noteStr] ?? 0;
+      return semitone + (octave + 1) * 12;
+    }
   </script>
 </body>
 </html>
