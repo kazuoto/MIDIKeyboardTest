@@ -2,32 +2,34 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>Parallel Reverb + Volume Slider (Fixed)</title>
+  <title>Parallel Reverb + Volume Slider + Release Sustain</title>
 </head>
 <body>
-  <h1>並列リバーブ + 音量スライダー (修正版)にゃ</h1>
-  
-  <!-- 音量調整用スライダー (0～2.0倍にしてる) -->
+  <h1>並列リバーブ + 音量スライダー + リリース余韻にゃ</h1>
+
+  <!-- マスター音量を調整するスライダー(0～2倍) -->
   <p>
     <label for="volumeSlider">Master Volume:</label>
     <input id="volumeSlider" type="range" min="0" max="2" step="0.01" value="1" />
     <span id="volumeValue">1.00</span>
   </p>
 
+  <!-- MIDIアクセス&オーディオ開始ボタン -->
   <button id="startBtn">オーディオ＆MIDI開始にゃ</button>
 
   <script>
     /*
-      ▼ ポイント
-      1) 並列リバーブ (ドライ音 & ウェット音を別ルートで合流)
-      2) マスターゲインを rangeスライダー で操作 (文字列→数値化してtoFixed)
-      3) reverbImpulseURL を ユーザーのGitHub上にホストしたものに向ける想定
+      ▼ 概要
+       1) AudioWorkletでマルチサンプル再生(ピアノ)
+       2) リリース機能を実装してNote Off後に余韻がある
+       3) 並列リバーブ(ドライ+ウェット)でリバーブ感を調整
+       4) マスター音量をスライダーで操作
     */
 
-    // ▼ リバーブIR (例: あなたのGitHubにあるSmallRoom.wav)
+    // ◆ リバーブIR (GitHubにアップした.wavなどを指定するにゃ)
     const reverbImpulseURL = "https://kazuoto.github.io/MIDIKeyboardTest/SmallRoom.wav";
 
-    // ▼ ピアノのサンプル音(複数)を指定 (Salamander Piano)
+    // ◆ サラマンダーピアノの一部サンプルURL (Tone.js公式がホストしてる)
     const sampleMap = {
       "A0": "A0.mp3","C1": "C1.mp3","Ds1": "Ds1.mp3","Fs1": "Fs1.mp3",
       "A1": "A1.mp3","C2": "C2.mp3","Ds2": "Ds2.mp3","Fs2": "Fs2.mp3",
@@ -38,16 +40,20 @@
       "A6": "A6.mp3","C7": "C7.mp3","Ds7": "Ds7.mp3","Fs7": "Fs7.mp3",
       "A7": "A7.mp3"
     };
-    // サンプル音源のベースURL
+    // サンプルベースURL
     const baseUrl = "https://tonejs.github.io/audio/salamander/";
 
-    // ▼ AudioWorkletでマルチサンプル再生するコード
+    /*
+      ▼ AudioWorklet コード: リリース付きマルチサンプルシンセ
+         - Note Off時にリリースフラグを立てて、一定時間かけてフェードアウト
+    */
     const workletCode = `
       class MultiSampleProcessor extends AudioWorkletProcessor {
         constructor() {
           super();
           this.samples = {};
           this.voices = {};
+          this.sampleRateHost = sampleRate; // ホスト(ブラウザ)のサンプルレート
 
           this.port.onmessage = (e) => {
             const msg = e.data;
@@ -55,14 +61,25 @@
               this.samples = msg.samples;
             } else if (msg.type === "noteOn") {
               const { noteNumber, velocity, nearestNote } = msg;
+              // 新しいボイスを作成にゃ
               this.voices[noteNumber] = {
                 position: 0,
                 sampleData: this.samples[nearestNote],
                 playbackRate: Math.pow(2, (noteNumber - nearestNote) / 12),
-                velocity: velocity / 127,
+                amplitude: (velocity / 127),
+                inRelease: false,
+                releaseTime: 1.0,        // 1秒かけてフェードアウトする
+                releaseStartPos: 0,      // リリース開始時点のサンプル位置
+                releaseStartAmp: 0,      // リリース開始時点の音量
               };
             } else if (msg.type === "noteOff") {
-              delete this.voices[msg.noteNumber];
+              // リリースを開始にゃ
+              const voice = this.voices[msg.noteNumber];
+              if (voice) {
+                voice.inRelease = true;
+                voice.releaseStartPos = voice.position;
+                voice.releaseStartAmp = voice.amplitude;
+              }
             }
           };
         }
@@ -70,7 +87,6 @@
         process(inputs, outputs, parameters) {
           const output = outputs[0];
           const channelData = output[0];
-
           channelData.fill(0);
 
           if (!this.samples || Object.keys(this.samples).length === 0) {
@@ -79,29 +95,55 @@
 
           for (let i = 0; i < channelData.length; i++) {
             let out = 0;
+
             for (const noteNumber in this.voices) {
               const v = this.voices[noteNumber];
               if (!v.sampleData) continue;
 
+              // 現在のサンプルインデックス (少数)
               const idx = v.position;
               const idxInt = Math.floor(idx);
               const idxFrac = idx - idxInt;
 
+              // 終端を超えたら削除
               if (idxInt >= v.sampleData.length - 1) {
                 delete this.voices[noteNumber];
                 continue;
               }
 
+              // 線形補間
               const s1 = v.sampleData[idxInt];
               const s2 = v.sampleData[idxInt + 1] || 0;
-              const sampleVal = s1 + (s2 - s1) * idxFrac;
+              let sampleVal = s1 + (s2 - s1) * idxFrac;
 
-              out += sampleVal * v.velocity;
+              // ボイスの音量適用
+              sampleVal *= v.amplitude;
 
+              out += sampleVal;
+
+              // 再生位置を進める
               v.position += v.playbackRate;
+
+              // ▼ リリース中ならフェードアウト
+              if (v.inRelease) {
+                const framesSinceRelease = (v.position - v.releaseStartPos) / v.playbackRate;
+                const secSinceRelease = framesSinceRelease / this.sampleRateHost;
+                if (secSinceRelease >= v.releaseTime) {
+                  // リリース完了で削除
+                  delete this.voices[noteNumber];
+                } else {
+                  // リリース進行度 (0→1)
+                  const r = secSinceRelease / v.releaseTime;
+                  // 線形に(1→0)へ下がる
+                  v.amplitude = v.releaseStartAmp * (1.0 - r);
+                }
+              }
             }
+
+            // 全体音量(簡易)
             channelData[i] = out * 0.5;
           }
+
           return true;
         }
       }
@@ -109,15 +151,15 @@
       registerProcessor('multi-sample-processor', MultiSampleProcessor);
     `;
 
-    // ▼ グローバル変数
+    // グローバル変数
     let audioCtx;
     let sampleNode;   // AudioWorkletNode
     let reverbNode;   // ConvolverNode
     let dryGain;      // ドライ音ゲイン
     let wetGain;      // リバーブ音ゲイン
-    let masterGain;   // 最後にまとめて音量調整
+    let masterGain;   // 全体音量
 
-    // サンプルをダウンロードしてnoteNumber→Float32Arrayを作るマップ
+    // サンプル音のマッピング（ noteNumber -> サンプルURL ）
     let sampleNoteMap = {};
     let sortedSampleNotes = [];
 
@@ -128,46 +170,46 @@
       await loadAndSetReverbImpulse();
       await startMIDI();
 
-      alert("並列リバーブ + 音量スライダー(修正版)にゃ！試してみてにゃ～🐱");
+      alert("リリース付き・並列リバーブ + 音量スライダー 完成版にゃ！");
     });
 
-    // ▼ AudioWorklet関連の初期化
+    // ---------- AudioWorklet初期化 ----------
     async function startAudioWorklet() {
       audioCtx = new AudioContext({ latencyHint: "interactive" });
-      // register the processor code
+      // workletコードを登録
       await audioCtx.audioWorklet.addModule(
         URL.createObjectURL(new Blob([workletCode], {type: 'application/javascript'}))
       );
 
-      // 作成
+      // Node作成
       sampleNode = new AudioWorkletNode(audioCtx, 'multi-sample-processor');
       reverbNode = audioCtx.createConvolver();
       dryGain = audioCtx.createGain();
       wetGain = audioCtx.createGain();
       masterGain = audioCtx.createGain();
 
-      // 値を調整
+      // 初期値
       dryGain.gain.value = 1.0;
-      wetGain.gain.value = 0.2;    // リバーブ少なめにゃ
-      masterGain.gain.value = 1.0; // スライダー初期値(1.0)に合わせる
+      wetGain.gain.value = 0.2;  // リバーブ少なめ
+      masterGain.gain.value = 1.0; // 後でスライダーで変わる
 
-      // パラレルルーティング
+      // 並列ルーティング (ドライ / ウェット)
       sampleNode.connect(dryGain).connect(masterGain);
       sampleNode.connect(reverbNode).connect(wetGain).connect(masterGain);
       masterGain.connect(audioCtx.destination);
 
-      // サンプル群をロード→AudioWorkletNodeに渡す
+      // サンプルをロード→AudioWorkletへ
       const loaded = await loadAllSamples();
       sampleNode.port.postMessage({
         type: "loadedSamples",
         samples: loaded
       });
 
-      // スライダー設定
+      // スライダー(音量)のセットアップ
       setupVolumeSlider();
     }
 
-    // ▼ リバーブのインパルス読み込み
+    // ---------- リバーブIRをfetch & decode ----------
     async function loadAndSetReverbImpulse() {
       const resp = await fetch(reverbImpulseURL);
       if (!resp.ok) {
@@ -180,7 +222,7 @@
       console.log("リバーブIR読み込み完了にゃ:", reverbNode.buffer);
     }
 
-    // ▼ MIDI
+    // ---------- MIDI ----------
     async function startMIDI() {
       const midiAccess = await navigator.requestMIDIAccess();
       for (let input of midiAccess.inputs.values()) {
@@ -214,7 +256,7 @@
       });
     }
 
-    // ▼ サンプルを全部ロードしてFloat32Array化
+    // ---------- サンプルロード (noteNumber→Float32Array) ----------
     async function loadAllSamples() {
       const samples = {};
       const noteNumbers = Object.keys(sampleNoteMap).map(n => parseInt(n));
@@ -229,15 +271,13 @@
       return samples;
     }
 
-    // ▼ sampleMapを noteNumberマップに変換
+    // ---------- sampleMapをnoteNumberに変換 ----------
     function setupSampleMap() {
       for (let key in sampleMap) {
         const nn = noteNameToMidi(key);
         sampleNoteMap[nn] = baseUrl + sampleMap[key];
       }
-      sortedSampleNotes = Object.keys(sampleNoteMap)
-                                .map(n => parseInt(n))
-                                .sort((a, b) => a - b);
+      sortedSampleNotes = Object.keys(sampleNoteMap).map(n => parseInt(n)).sort((a, b) => a - b);
     }
 
     function findNearestSample(midiNote) {
@@ -253,28 +293,27 @@
       return nearest;
     }
 
-    // "A4" → 69 みたいな計算
+    // "A4" → 69 のように変換
     function noteNameToMidi(noteName) {
       const table = {
-        "C":0,"C#":1,"Db":1,"D":2,"D#":3,"Eb":3,
-        "E":4,"F":5,"F#":6,"Gb":6,"G":7,"G#":8,"Ab":8,
-        "A":9,"A#":10,"Bb":10,"B":11
+        "C":0,"C#":1,"Db":1,"D":2,"D#":3,"Eb":3,"E":4,"F":5,"F#":6,"Gb":6,
+        "G":7,"G#":8,"Ab":8,"A":9,"A#":10,"Bb":10,"B":11
       };
       let m = noteName.match(/^([A-G][#s]?)(\d+)/);
-      if (!m) return 60; 
+      if (!m) return 60;
       let noteStr = m[1].replace("s","#");
       let octave = parseInt(m[2],10);
       let semitone = table[noteStr] ?? 0;
       return semitone + (octave + 1)*12;
     }
 
-    // ▼ マスター音量スライダーのセットアップ (文字列→数値変換修正)
+    // ---------- マスター音量スライダー設定 ----------
     function setupVolumeSlider() {
       const slider = document.getElementById('volumeSlider');
       const label = document.getElementById('volumeValue');
 
       // 初期表示
-      let val = parseFloat(slider.value);  // slider.valueは文字列なのでparseFloat
+      let val = parseFloat(slider.value);
       label.textContent = val.toFixed(2);
 
       slider.addEventListener('input', () => {
@@ -285,7 +324,6 @@
         label.textContent = val.toFixed(2);
       });
     }
-
   </script>
 </body>
 </html>
