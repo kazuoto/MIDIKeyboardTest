@@ -5,7 +5,7 @@
   <title>AudioWorklet Multi-Sample Piano-ish + Reverb</title>
 </head>
 <body>
-  <h1>AudioWorkletでピアノサンプル + リバーブにゃ (修正版)</h1>
+  <h1>AudioWorkletでピアノサンプル + リバーブにゃ (GitHubに自前IR配置版)</h1>
   <button id="startBtn">オーディオ＆MIDI開始にゃ</button>
 
   <script>
@@ -14,8 +14,18 @@
       ▼ AudioWorkletで低遅延化
       ▼ ConvolverNodeでリバーブ
       ▼ マスターゲインを上げて音量UP
-      ▼ リバーブIR: "https://multiweb.cz/rir/SmallRoom.wav"
+      ▼ リバーブIRは自分のリポジトリでホスティングしてCORS問題回避
     */
+
+    // 例: "https://[あなたのGitHub名].github.io/MIDIKeyboardTest/reverb/SmallRoom.wav"
+    const reverbImpulseURL = "https://kazuoto.github.io/MIDIKeyboardTest/SmallRoom.wav";
+
+    // 以下、前回と同じ: 
+    // 1) Salamander Pianoサンプルマッピング
+    // 2) AudioWorkletコード
+    // 3) サンプルロード & MIDI処理
+    // 4) Reverb & masterGain設定
+    // ---- (長いのでまとめて貼り付けするにゃ) ----
 
     // Salamander Piano の一部キーをピックアップ
     const sampleMap = {
@@ -51,9 +61,6 @@
     };
     const baseUrl = "https://tonejs.github.io/audio/salamander/";
 
-    // リバーブに使うImpulse ResponseのURL (今回はSmallRoom.wavをサンプル使用)
-    const reverbImpulseURL = "https://multiweb.cz/rir/SmallRoom.wav";
-
     // AudioWorkletのマルチサンプル用コードにゃ
     const workletCode = `
       class MultiSampleProcessor extends AudioWorkletProcessor {
@@ -61,7 +68,6 @@
           super();
           this.samples = {}; 
           this.voices = {}; 
-
           this.port.onmessage = (e) => {
             const msg = e.data;
             if (msg.type === "loadedSamples") {
@@ -79,47 +85,37 @@
             }
           };
         }
-
         process(inputs, outputs, parameters) {
           const output = outputs[0];
           const channelData = output[0];
           channelData.fill(0);
-
           if (!this.samples || Object.keys(this.samples).length === 0) {
             return true;
           }
-
           for (let i = 0; i < channelData.length; i++) {
             let out = 0;
             for (const noteNumber in this.voices) {
               const v = this.voices[noteNumber];
               if (!v.sampleData) continue;
               const buf = v.sampleData;
-
               const idx = v.position;
               const idxInt = Math.floor(idx);
               const idxFrac = idx - idxInt;
-
               if (idxInt >= buf.length - 1) {
                 delete this.voices[noteNumber];
                 continue;
               }
-
               const s1 = buf[idxInt];
               const s2 = buf[idxInt + 1] || 0;
               const sampleVal = s1 + (s2 - s1) * idxFrac;
-
               out += sampleVal * v.velocity;
-
               v.position += v.playbackRate;
             }
             channelData[i] = out * 0.5;
           }
-
           return true;
         }
       }
-
       registerProcessor('multi-sample-processor', MultiSampleProcessor);
     `;
 
@@ -132,11 +128,11 @@
     let sortedSampleNotes = [];
 
     document.getElementById('startBtn').addEventListener('click', async () => {
-      setupSampleMap();                // サンプルのマッピング作成
-      await startAudioWorklet();       // AudioWorklet起動 & サンプルロード
-      await audioCtx.resume();         // ユーザー操作での解放
-      await loadAndSetReverbImpulse(); // リバーブ用IRをロードしてConvolverに設定
-      await startMIDI();               // MIDI開始
+      setupSampleMap();
+      await startAudioWorklet();
+      await audioCtx.resume();
+      await loadAndSetReverbImpulse(); 
+      await startMIDI();
       alert("起動にゃ！リバーブ+音量UPアリ。弾いてみてにゃ～🐱");
     });
 
@@ -151,13 +147,12 @@
 
       // リバーブNode
       reverbNode = audioCtx.createConvolver();
-      // IRはまだ未設定。このあと loadAndSetReverbImpulse() で buffer をセットする
 
-      // マスターゲイン (音量ちょっと上げる→1.8とか)
+      // マスターゲイン (音量上げ)
       masterGain = audioCtx.createGain();
       masterGain.gain.value = 1.8;
 
-      // 接続順: AudioWorkletNode → リバーブ → masterGain → destination
+      // 接続順: AudioWorkletNode → reverbNode → masterGain → destination
       sampleNode.connect(reverbNode).connect(masterGain).connect(audioCtx.destination);
 
       // サンプルをロードしてWorkletに渡す
@@ -168,7 +163,6 @@
       });
     }
 
-    // リバーブ用Impulseをロードして、ConvolverNodeにセット
     async function loadAndSetReverbImpulse() {
       const resp = await fetch(reverbImpulseURL);
       if (!resp.ok) {
@@ -177,7 +171,7 @@
       }
       const arrBuf = await resp.arrayBuffer();
       const audioBuf = await audioCtx.decodeAudioData(arrBuf);
-      reverbNode.buffer = audioBuf; // これでリバーブがかかるようになるにゃ
+      reverbNode.buffer = audioBuf; 
       console.log("リバーブIR読み込み完了にゃ:", reverbNode.buffer);
     }
 
@@ -251,7 +245,6 @@
       return nearest;
     }
 
-    // "C4"とか→ノート番号
     function noteNameToMidi(noteName) {
       const table = {
         "C": 0, "C#":1, "Db":1, "D":2, "D#":3, "Eb":3, "E":4, "F":5, "F#":6, "Gb":6,
