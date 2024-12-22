@@ -2,104 +2,172 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>Low Latency MIDI + Tone.js Sample</title>
+  <title>AudioWorklet Sample Piano-ish</title>
 </head>
 <body>
-  <h1>低遅延(っぽい) MIDI + Tone.js ピアノ音源にゃ</h1>
-  <!-- ボタンを押すとMIDIアクセス＆オーディオContext開始にゃ -->
-  <button id="requestMIDI">MIDI使用許可をリクエストするにゃ</button>
-
-  <!-- Tone.js CDN -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.27/Tone.min.js"></script>
+  <h1>AudioWorkletでサンプル音源再生にゃ(超簡易版)</h1>
+  <button id="startBtn">オーディオ＆MIDI開始にゃ</button>
 
   <script>
-    // 1. latencyHint: 'interactive' なAudioContextを自作
-    const lowLatencyContext = new AudioContext({
-      latencyHint: 'interactive'
-    });
+    /* 
+      ★★★ 事前に"サンプル音"を1個用意しておくにゃ ★★★
+      ここでは「C4のピアノ音」を想定し、
+      下記URLから適当にダウンロードした「C4.mp3」を使う例にするにゃ。
+      あるいは自分のMP3ファイルをURLに指定してにゃ。
 
-    // 2. Tone.jsが使うオーディオコンテキストを置き換え
-    Tone.setContext(lowLatencyContext);
+      下は「Salamander Piano」内のC4のURLサンプル例 (ちょっと長い):
+      "https://tonejs.github.io/audio/salamander/C4.mp3"
+    */
+    const SAMPLE_URL = "https://tonejs.github.io/audio/salamander/C4.mp3";
 
-    // 3. Tone.Samplerで「Salamander Piano」音源を読み込む
-    //    (C3, C4, C5とかじゃなくて、いっぱい音源があるやつにゃ)
-    const sampler = new Tone.Sampler({
-      urls: {
-        "A0": "A0.mp3",
-        "C1": "C1.mp3",
-        "D#1": "Ds1.mp3",
-        "F#1": "Fs1.mp3",
-        "A1": "A1.mp3",
-        "C2": "C2.mp3",
-        "D#2": "Ds2.mp3",
-        "F#2": "Fs2.mp3",
-        "A2": "A2.mp3",
-        "C3": "C3.mp3",
-        "D#3": "Ds3.mp3",
-        "F#3": "Fs3.mp3",
-        "A3": "A3.mp3",
-        "C4": "C4.mp3",
-        "D#4": "Ds4.mp3",
-        "F#4": "Fs4.mp3",
-        "A4": "A4.mp3",
-        "C5": "C5.mp3",
-        "D#5": "Ds5.mp3",
-        "F#5": "Fs5.mp3",
-        "A5": "A5.mp3",
-        "C6": "C6.mp3",
-        "D#6": "Ds6.mp3",
-        "F#6": "Fs6.mp3",
-        "A6": "A6.mp3",
-        "C7": "C7.mp3",
-        "D#7": "Ds7.mp3",
-        "F#7": "Fs7.mp3",
-        "A7": "A7.mp3"
-      },
-      release: 1,
-      baseUrl: "https://tonejs.github.io/audio/salamander/"
-    }).toDestination();
+    // ★ AudioWorkletProcessorの実装を文字列で用意する (本来は別ファイルが理想)
+    const workletCode = `
+      class SamplePlayerProcessor extends AudioWorkletProcessor {
+        constructor() {
+          super();
+          // サンプリングデータをFloat32Arrayで保持するにゃ(モノラル前提)
+          this.sampleData = null;
+          this.sampleRateHost = sampleRate; // ホスト側のサンプルレート
+          this.voices = {}; // noteNumberごとに再生ステータスを持つにゃ
 
-    // MIDIノート番号→音名に変換する簡単な関数にゃ
-    function midiToNoteName(midiNote) {
-      const noteNames = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-      const octave = Math.floor(midiNote / 12) - 1;
-      const note = noteNames[midiNote % 12];
-      return note + octave;
+          // port.onmessage でメインスレッドからのデータや命令を受け取るにゃ
+          this.port.onmessage = (e) => {
+            const msg = e.data;
+            if (msg.type === "loadSample") {
+              // サンプルロード完了データ (Float32Array) を受け取って保存
+              this.sampleData = msg.buffer;
+            } else if (msg.type === "noteOn") {
+              // 再生開始
+              const noteNumber = msg.noteNumber;
+              // 位置を0にして再生開始するにゃ
+              // velocityは一旦無視して一定音量にするか、
+              // ここで声ごとにゲイン管理してもOK
+              this.voices[noteNumber] = {
+                position: 0,
+                // サンプル本来のピッチはC4(60) → freq=261.63Hzくらい
+                // その周波数比で再生速度を決めるにゃ
+                playbackRate: Math.pow(2, (noteNumber - 60) / 12)
+              };
+            } else if (msg.type === "noteOff") {
+              // ボイスを消す(簡易実装で即停止)
+              const noteNumber = msg.noteNumber;
+              delete this.voices[noteNumber];
+            }
+          };
+        }
+
+        process(inputs, outputs, parameters) {
+          const output = outputs[0];
+          const channelData = output[0]; // モノラル出力
+
+          if (!this.sampleData) {
+            // サンプル未ロードなら全部0クリア
+            channelData.fill(0);
+            return true;
+          }
+
+          // 1サンプルごとに全てのvoiceを合成して書き込むにゃ
+          for (let i = 0; i < channelData.length; i++) {
+            let out = 0;
+            for (let noteNumber in this.voices) {
+              const voice = this.voices[noteNumber];
+              // voice.position が整数じゃないから、小数部分をfloorしてサンプル参照
+              const idx = Math.floor(voice.position);
+
+              // サンプル音が終端を超えたらループしないで止める
+              if (idx >= this.sampleData.length) {
+                // 止める
+                delete this.voices[noteNumber];
+                continue;
+              }
+
+              // とりあえず線形補間なしで近似値を取る(ガクガク音程だが…)
+              const sampleVal = this.sampleData[idx];
+
+              out += sampleVal; // velocityや音量は一旦無視して合計
+
+              // 再生速度に応じてpositionを進める
+              voice.position += voice.playbackRate;
+            }
+            // 出力
+            channelData[i] = out * 0.3; // 全体音量ちょい下げ
+          }
+
+          return true;
+        }
+      }
+
+      registerProcessor('sample-player-processor', SamplePlayerProcessor);
+    `;
+
+    let audioCtx;
+    let sampleNode;
+    let sampleGain;
+
+    // サンプルをロードしてFloat32Arrayにする関数
+    async function loadSample(url) {
+      const res = await fetch(url);
+      const arrayBuffer = await res.arrayBuffer();
+      // AudioContextでdecodeAudioDataしてステレオ→モノラルに変換してFloat32Arrayへ
+      const audioBuf = await audioCtx.decodeAudioData(arrayBuffer);
+      // まずはLチャンネルだけ抽出(本当はステレオ合成もやろうと思えばできる)
+      const chData = audioBuf.getChannelData(0);
+      // そのままFloat32ArrayでOK
+      return chData;
     }
 
-    document.getElementById('requestMIDI').addEventListener('click', async () => {
-      // 4. ユーザー操作でAudioContextを「resume」 (Chromeなどで必要)
-      //    Tone.start() すると内部のAudioContextがunlockedされるにゃ
-      await Tone.start();
-      console.log("AudioContextがスタートにゃ！", lowLatencyContext.state);
+    async function startAudioWorklet() {
+      // latencyHint: "interactive" でAudioContextを作るにゃ
+      audioCtx = new AudioContext({ latencyHint: 'interactive' });
+      // AudioWorkletを登録
+      await audioCtx.audioWorklet.addModule(
+        URL.createObjectURL(new Blob([workletCode], {type: 'application/javascript'}))
+      );
+      // Node作成
+      sampleNode = new AudioWorkletNode(audioCtx, 'sample-player-processor');
 
-      // 5. MIDIアクセス
-      navigator.requestMIDIAccess()
-        .then((midiAccess) => {
-          alert("MIDIアクセス成功にゃ！弾いてみてにゃ～🐱");
+      // マスターゲイン
+      sampleGain = audioCtx.createGain();
+      sampleGain.gain.value = 1.0; // 全音量
+      sampleNode.connect(sampleGain).connect(audioCtx.destination);
 
-          for (let input of midiAccess.inputs.values()) {
-            input.onmidimessage = (msg) => {
-              const [status, data1, data2] = msg.data;
-              const command = status & 0xf0;
-              if (command === 0x90) { // Note On
-                if (data2 > 0) {
-                  // velocityを第3引数にセット (0～1に正規化)
-                  sampler.triggerAttack(midiToNoteName(data1), undefined, data2 / 127);
-                } else {
-                  // velocity=0ならNoteOffと同じ扱い
-                  sampler.triggerRelease(midiToNoteName(data1));
-                }
-              } else if (command === 0x80) { // Note Off
-                sampler.triggerRelease(midiToNoteName(data1));
-              }
-            };
+      // サンプルをロードしてAudioWorkletに送るにゃ
+      const sampleData = await loadSample(SAMPLE_URL);
+      sampleNode.port.postMessage({
+        type: "loadSample",
+        buffer: sampleData
+      });
+    }
+
+    // MIDI処理
+    async function startMIDI() {
+      const midiAccess = await navigator.requestMIDIAccess();
+      for (let input of midiAccess.inputs.values()) {
+        input.onmidimessage = (msg) => {
+          const [status, data1, data2] = msg.data;
+          const command = status & 0xf0;
+          if (command === 0x90 && data2 > 0) {
+            // NoteOn
+            sampleNode.port.postMessage({
+              type: "noteOn",
+              noteNumber: data1
+            });
+          } else if (command === 0x80 || (command === 0x90 && data2 === 0)) {
+            // NoteOff
+            sampleNode.port.postMessage({
+              type: "noteOff",
+              noteNumber: data1
+            });
           }
-        })
-        .catch((err) => {
-          console.error("MIDIアクセス失敗にゃ…", err);
-          alert("MIDIアクセスが拒否または失敗したにゃ…");
-        });
+        };
+      }
+    }
+
+    document.getElementById('startBtn').addEventListener('click', async () => {
+      await startAudioWorklet();
+      await audioCtx.resume();
+      await startMIDI();
+      alert("AudioWorkletサンプラー起動にゃ！キーボード弾いてみてにゃ～🐱");
     });
   </script>
 </body>
