@@ -2,16 +2,16 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>Parallel Reverb + Volume Slider + Release Sustain</title>
+  <title>Parallel Reverb + Volume Slider + Release Sustain (Modified)</title>
 </head>
 <body>
-  <h1>並列リバーブ + 音量スライダー + リリース余韻にゃ</h1>
+  <h1>並列リバーブ + 音量スライダー + リリース余韻 (初期2.0, 最大3.0)にゃ</h1>
 
-  <!-- マスター音量を調整するスライダー(0～2倍) -->
+  <!-- マスター音量を調整するスライダー(0～3倍)。初期値を2.0にするにゃ -->
   <p>
     <label for="volumeSlider">Master Volume:</label>
-    <input id="volumeSlider" type="range" min="0" max="2" step="0.01" value="1" />
-    <span id="volumeValue">1.00</span>
+    <input id="volumeSlider" type="range" min="0" max="3" step="0.01" value="2" />
+    <span id="volumeValue">2.00</span>
   </p>
 
   <!-- MIDIアクセス&オーディオ開始ボタン -->
@@ -21,15 +21,15 @@
     /*
       ▼ 概要
        1) AudioWorkletでマルチサンプル再生(ピアノ)
-       2) リリース機能を実装してNote Off後に余韻がある
-       3) 並列リバーブ(ドライ+ウェット)でリバーブ感を調整
-       4) マスター音量をスライダーで操作
+       2) リリース機能(余韻)を実装
+       3) 並列リバーブ(ドライ+ウェット)
+       4) マスター音量スライダー初期値2.0 / max3.0
     */
 
-    // ◆ リバーブIR (GitHubにアップした.wavなどを指定するにゃ)
+    // リバーブIR (例: あなたのGitHubに配置したものを指定してね)
     const reverbImpulseURL = "https://kazuoto.github.io/MIDIKeyboardTest/SmallRoom.wav";
 
-    // ◆ サラマンダーピアノの一部サンプルURL (Tone.js公式がホストしてる)
+    // サラマンダーピアノの一部サンプルURL
     const sampleMap = {
       "A0": "A0.mp3","C1": "C1.mp3","Ds1": "Ds1.mp3","Fs1": "Fs1.mp3",
       "A1": "A1.mp3","C2": "C2.mp3","Ds2": "Ds2.mp3","Fs2": "Fs2.mp3",
@@ -40,12 +40,11 @@
       "A6": "A6.mp3","C7": "C7.mp3","Ds7": "Ds7.mp3","Fs7": "Fs7.mp3",
       "A7": "A7.mp3"
     };
-    // サンプルベースURL
     const baseUrl = "https://tonejs.github.io/audio/salamander/";
 
     /*
-      ▼ AudioWorklet コード: リリース付きマルチサンプルシンセ
-         - Note Off時にリリースフラグを立てて、一定時間かけてフェードアウト
+      ▼ AudioWorklet コード
+         リリース機能を追加してNote Off後に余韻
     */
     const workletCode = `
       class MultiSampleProcessor extends AudioWorkletProcessor {
@@ -53,7 +52,7 @@
           super();
           this.samples = {};
           this.voices = {};
-          this.sampleRateHost = sampleRate; // ホスト(ブラウザ)のサンプルレート
+          this.sampleRateHost = sampleRate; // ブラウザのサンプルレート
 
           this.port.onmessage = (e) => {
             const msg = e.data;
@@ -61,19 +60,19 @@
               this.samples = msg.samples;
             } else if (msg.type === "noteOn") {
               const { noteNumber, velocity, nearestNote } = msg;
-              // 新しいボイスを作成にゃ
+              // ボイス作成
               this.voices[noteNumber] = {
                 position: 0,
                 sampleData: this.samples[nearestNote],
                 playbackRate: Math.pow(2, (noteNumber - nearestNote) / 12),
-                amplitude: (velocity / 127),
+                amplitude: velocity / 127,
                 inRelease: false,
-                releaseTime: 1.0,        // 1秒かけてフェードアウトする
-                releaseStartPos: 0,      // リリース開始時点のサンプル位置
-                releaseStartAmp: 0,      // リリース開始時点の音量
+                releaseTime: 1.0,        // 1秒かけてフェードアウト
+                releaseStartPos: 0,
+                releaseStartAmp: 0,
               };
             } else if (msg.type === "noteOff") {
-              // リリースを開始にゃ
+              // リリース開始
               const voice = this.voices[msg.noteNumber];
               if (voice) {
                 voice.inRelease = true;
@@ -100,50 +99,42 @@
               const v = this.voices[noteNumber];
               if (!v.sampleData) continue;
 
-              // 現在のサンプルインデックス (少数)
               const idx = v.position;
               const idxInt = Math.floor(idx);
               const idxFrac = idx - idxInt;
 
-              // 終端を超えたら削除
               if (idxInt >= v.sampleData.length - 1) {
                 delete this.voices[noteNumber];
                 continue;
               }
 
-              // 線形補間
               const s1 = v.sampleData[idxInt];
               const s2 = v.sampleData[idxInt + 1] || 0;
               let sampleVal = s1 + (s2 - s1) * idxFrac;
-
-              // ボイスの音量適用
-              sampleVal *= v.amplitude;
+              sampleVal *= v.amplitude; // 音量
 
               out += sampleVal;
 
               // 再生位置を進める
               v.position += v.playbackRate;
 
-              // ▼ リリース中ならフェードアウト
+              // リリース中ならフェードアウト
               if (v.inRelease) {
                 const framesSinceRelease = (v.position - v.releaseStartPos) / v.playbackRate;
                 const secSinceRelease = framesSinceRelease / this.sampleRateHost;
                 if (secSinceRelease >= v.releaseTime) {
-                  // リリース完了で削除
+                  // リリース終わり
                   delete this.voices[noteNumber];
                 } else {
-                  // リリース進行度 (0→1)
+                  // 線形に(1→0)
                   const r = secSinceRelease / v.releaseTime;
-                  // 線形に(1→0)へ下がる
                   v.amplitude = v.releaseStartAmp * (1.0 - r);
                 }
               }
             }
 
-            // 全体音量(簡易)
             channelData[i] = out * 0.5;
           }
-
           return true;
         }
       }
@@ -153,13 +144,12 @@
 
     // グローバル変数
     let audioCtx;
-    let sampleNode;   // AudioWorkletNode
-    let reverbNode;   // ConvolverNode
-    let dryGain;      // ドライ音ゲイン
-    let wetGain;      // リバーブ音ゲイン
-    let masterGain;   // 全体音量
+    let sampleNode;  
+    let reverbNode;  
+    let dryGain;     
+    let wetGain;     
+    let masterGain;  
 
-    // サンプル音のマッピング（ noteNumber -> サンプルURL ）
     let sampleNoteMap = {};
     let sortedSampleNotes = [];
 
@@ -170,46 +160,44 @@
       await loadAndSetReverbImpulse();
       await startMIDI();
 
-      alert("リリース付き・並列リバーブ + 音量スライダー 完成版にゃ！");
+      alert("初期音量2.0, 最大3.0にゃ！試してみてにゃ～");
     });
 
-    // ---------- AudioWorklet初期化 ----------
+    // AudioWorklet初期化
     async function startAudioWorklet() {
       audioCtx = new AudioContext({ latencyHint: "interactive" });
-      // workletコードを登録
       await audioCtx.audioWorklet.addModule(
         URL.createObjectURL(new Blob([workletCode], {type: 'application/javascript'}))
       );
 
-      // Node作成
       sampleNode = new AudioWorkletNode(audioCtx, 'multi-sample-processor');
       reverbNode = audioCtx.createConvolver();
       dryGain = audioCtx.createGain();
       wetGain = audioCtx.createGain();
       masterGain = audioCtx.createGain();
 
-      // 初期値
+      // 並列リバーブ設定
       dryGain.gain.value = 1.0;
-      wetGain.gain.value = 0.2;  // リバーブ少なめ
-      masterGain.gain.value = 1.0; // 後でスライダーで変わる
+      wetGain.gain.value = 0.2;
+      // ★ マスターゲインを2.0に(初期値)
+      masterGain.gain.value = 2.0;
 
-      // 並列ルーティング (ドライ / ウェット)
+      // パラレルルーティング
       sampleNode.connect(dryGain).connect(masterGain);
       sampleNode.connect(reverbNode).connect(wetGain).connect(masterGain);
       masterGain.connect(audioCtx.destination);
 
-      // サンプルをロード→AudioWorkletへ
+      // サンプルロード
       const loaded = await loadAllSamples();
       sampleNode.port.postMessage({
         type: "loadedSamples",
         samples: loaded
       });
 
-      // スライダー(音量)のセットアップ
       setupVolumeSlider();
     }
 
-    // ---------- リバーブIRをfetch & decode ----------
+    // リバーブIR読み込み
     async function loadAndSetReverbImpulse() {
       const resp = await fetch(reverbImpulseURL);
       if (!resp.ok) {
@@ -222,7 +210,7 @@
       console.log("リバーブIR読み込み完了にゃ:", reverbNode.buffer);
     }
 
-    // ---------- MIDI ----------
+    // MIDI
     async function startMIDI() {
       const midiAccess = await navigator.requestMIDIAccess();
       for (let input of midiAccess.inputs.values()) {
@@ -256,7 +244,7 @@
       });
     }
 
-    // ---------- サンプルロード (noteNumber→Float32Array) ----------
+    // サンプルロード
     async function loadAllSamples() {
       const samples = {};
       const noteNumbers = Object.keys(sampleNoteMap).map(n => parseInt(n));
@@ -271,13 +259,15 @@
       return samples;
     }
 
-    // ---------- sampleMapをnoteNumberに変換 ----------
+    // sampleMap -> noteNumber
     function setupSampleMap() {
       for (let key in sampleMap) {
         const nn = noteNameToMidi(key);
         sampleNoteMap[nn] = baseUrl + sampleMap[key];
       }
-      sortedSampleNotes = Object.keys(sampleNoteMap).map(n => parseInt(n)).sort((a, b) => a - b);
+      sortedSampleNotes = Object.keys(sampleNoteMap)
+                                .map(n => parseInt(n))
+                                .sort((a,b)=>a-b);
     }
 
     function findNearestSample(midiNote) {
@@ -293,7 +283,7 @@
       return nearest;
     }
 
-    // "A4" → 69 のように変換
+    // "A4" -> 69
     function noteNameToMidi(noteName) {
       const table = {
         "C":0,"C#":1,"Db":1,"D":2,"D#":3,"Eb":3,"E":4,"F":5,"F#":6,"Gb":6,
@@ -307,13 +297,13 @@
       return semitone + (octave + 1)*12;
     }
 
-    // ---------- マスター音量スライダー設定 ----------
+    // 音量スライダー (max=3, 初期=2)
     function setupVolumeSlider() {
       const slider = document.getElementById('volumeSlider');
       const label = document.getElementById('volumeValue');
 
       // 初期表示
-      let val = parseFloat(slider.value);
+      let val = parseFloat(slider.value); 
       label.textContent = val.toFixed(2);
 
       slider.addEventListener('input', () => {
@@ -324,6 +314,7 @@
         label.textContent = val.toFixed(2);
       });
     }
+
   </script>
 </body>
 </html>
