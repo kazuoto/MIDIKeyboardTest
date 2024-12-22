@@ -2,34 +2,39 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>Parallel Reverb + Volume Slider + Release Sustain (Modified)</title>
+  <title>Parallel Reverb + Volume Slider + Attack & Release</title>
 </head>
 <body>
-  <h1>並列リバーブ + 音量スライダー + リリース余韻 (初期2.0, 最大3.0)にゃ</h1>
+  <h1>並列リバーブ + 音量スライダー + アタック＆リリースにゃ</h1>
 
-  <!-- マスター音量を調整するスライダー(0～3倍)。初期値を2.0にするにゃ -->
+  <!-- マスター音量スライダー (0～3倍)。初期値2.0 -->
   <p>
     <label for="volumeSlider">Master Volume:</label>
     <input id="volumeSlider" type="range" min="0" max="3" step="0.01" value="2" />
     <span id="volumeValue">2.00</span>
   </p>
 
-  <!-- MIDIアクセス&オーディオ開始ボタン -->
+  <!-- ボタン押したらMIDIアクセス＆オーディオ開始 -->
   <button id="startBtn">オーディオ＆MIDI開始にゃ</button>
 
   <script>
     /*
-      ▼ 概要
-       1) AudioWorkletでマルチサンプル再生(ピアノ)
-       2) リリース機能(余韻)を実装
-       3) 並列リバーブ(ドライ+ウェット)
-       4) マスター音量スライダー初期値2.0 / max3.0
+      ▼ 全体概要
+       1) AudioWorkletでマルチサンプル再生
+       2) Attack付き (Note On時に少しずつ音量上昇)
+       3) Release付き (Note Off時にフェードアウト)
+       4) 並列リバーブ (ドライ/ウェット)
+       5) マスター音量スライダー (初期2.0、最大3.0)
+
+      ↓ 以下の値を調整すればアタック・リリースを変えられるにゃ
+         - attackTime: 0.1 (0.1秒)
+         - releaseTime: 1.0 (1秒)
     */
 
-    // リバーブIR (例: あなたのGitHubに配置したものを指定してね)
+    // リバーブ用IR (自分のGitHubに置いた.wavなど)
     const reverbImpulseURL = "https://kazuoto.github.io/MIDIKeyboardTest/SmallRoom.wav";
 
-    // サラマンダーピアノの一部サンプルURL
+    // ピアノサンプル (Salamander Pianoの一部キー)
     const sampleMap = {
       "A0": "A0.mp3","C1": "C1.mp3","Ds1": "Ds1.mp3","Fs1": "Fs1.mp3",
       "A1": "A1.mp3","C2": "C2.mp3","Ds2": "Ds2.mp3","Fs2": "Fs2.mp3",
@@ -43,8 +48,8 @@
     const baseUrl = "https://tonejs.github.io/audio/salamander/";
 
     /*
-      ▼ AudioWorklet コード
-         リリース機能を追加してNote Off後に余韻
+      ▼ AudioWorkletコード:
+         改良ポイント→ Attack(アタック)とRelease(リリース)を両方実装
     */
     const workletCode = `
       class MultiSampleProcessor extends AudioWorkletProcessor {
@@ -60,24 +65,37 @@
               this.samples = msg.samples;
             } else if (msg.type === "noteOn") {
               const { noteNumber, velocity, nearestNote } = msg;
-              // ボイス作成
+              const targetAmp = velocity / 127;
+
+              // ボイス作成にゃ
               this.voices[noteNumber] = {
                 position: 0,
                 sampleData: this.samples[nearestNote],
                 playbackRate: Math.pow(2, (noteNumber - nearestNote) / 12),
-                amplitude: velocity / 127,
+
+                // Attack
+                inAttack: true,
+                attackTime: 0.1,       // 0.1秒で音量が0→targetAmpへ上がる
+                attackStartPos: 0,     // Attack開始時のposition
+                attackStartAmp: 0,     // Attack開始時の音量(0)
+                targetAmp: targetAmp,  // 攻撃後の最終音量
+
+                // Release
                 inRelease: false,
-                releaseTime: 1.0,        // 1秒かけてフェードアウト
+                releaseTime: 1.0,      // 1秒でフェードアウト
                 releaseStartPos: 0,
                 releaseStartAmp: 0,
+
+                // 現在の振幅(音量)
+                amplitude: 0
               };
             } else if (msg.type === "noteOff") {
-              // リリース開始
+              // Note Off → リリース開始
               const voice = this.voices[msg.noteNumber];
               if (voice) {
                 voice.inRelease = true;
                 voice.releaseStartPos = voice.position;
-                voice.releaseStartAmp = voice.amplitude;
+                voice.releaseStartAmp = voice.amplitude; 
               }
             }
           };
@@ -99,42 +117,66 @@
               const v = this.voices[noteNumber];
               if (!v.sampleData) continue;
 
+              // 再生位置(少数)
               const idx = v.position;
               const idxInt = Math.floor(idx);
               const idxFrac = idx - idxInt;
 
+              // サンプル終端
               if (idxInt >= v.sampleData.length - 1) {
                 delete this.voices[noteNumber];
                 continue;
               }
 
+              // 線形補間
               const s1 = v.sampleData[idxInt];
               const s2 = v.sampleData[idxInt + 1] || 0;
               let sampleVal = s1 + (s2 - s1) * idxFrac;
-              sampleVal *= v.amplitude; // 音量
 
-              out += sampleVal;
+              // アタック処理
+              if (v.inAttack) {
+                // Attack開始から何フレーム進んだか
+                const framesSinceAttack = (v.position - v.attackStartPos) / v.playbackRate;
+                const secSinceAttack = framesSinceAttack / this.sampleRateHost;
+                if (secSinceAttack >= v.attackTime) {
+                  // Attack完了
+                  v.inAttack = false;
+                  v.amplitude = v.targetAmp;
+                } else {
+                  // アタック中: 0→targetAmp に線形変化
+                  const a = secSinceAttack / v.attackTime;  // 0→1
+                  v.amplitude = v.attackStartAmp + (v.targetAmp - v.attackStartAmp)*a;
+                }
+              }
 
-              // 再生位置を進める
-              v.position += v.playbackRate;
-
-              // リリース中ならフェードアウト
+              // リリース処理
               if (v.inRelease) {
                 const framesSinceRelease = (v.position - v.releaseStartPos) / v.playbackRate;
                 const secSinceRelease = framesSinceRelease / this.sampleRateHost;
                 if (secSinceRelease >= v.releaseTime) {
-                  // リリース終わり
+                  // リリース完了
                   delete this.voices[noteNumber];
+                  continue;
                 } else {
-                  // 線形に(1→0)
+                  // リリース中: amplitudeを線形に(1→0)へ
                   const r = secSinceRelease / v.releaseTime;
-                  v.amplitude = v.releaseStartAmp * (1.0 - r);
+                  const newAmp = v.releaseStartAmp * (1.0 - r);
+                  v.amplitude = newAmp;
                 }
               }
+
+              // 実際の音量を適用
+              sampleVal *= v.amplitude;
+
+              out += sampleVal;
+
+              // 再生位置更新
+              v.position += v.playbackRate;
             }
 
             channelData[i] = out * 0.5;
           }
+
           return true;
         }
       }
@@ -150,9 +192,11 @@
     let wetGain;     
     let masterGain;  
 
+    // noteNumber→URLマッピング
     let sampleNoteMap = {};
     let sortedSampleNotes = [];
 
+    // ▼ ボタンクリックで開始
     document.getElementById('startBtn').addEventListener('click', async () => {
       setupSampleMap();
       await startAudioWorklet();
@@ -160,12 +204,13 @@
       await loadAndSetReverbImpulse();
       await startMIDI();
 
-      alert("初期音量2.0, 最大3.0にゃ！試してみてにゃ～");
+      alert("アタック＆リリース付きにゃ！(初期音量2.0 / max3.0)");
     });
 
-    // AudioWorklet初期化
+    // ▼ AudioWorklet初期化
     async function startAudioWorklet() {
       audioCtx = new AudioContext({ latencyHint: "interactive" });
+      // workletコードを登録
       await audioCtx.audioWorklet.addModule(
         URL.createObjectURL(new Blob([workletCode], {type: 'application/javascript'}))
       );
@@ -176,18 +221,17 @@
       wetGain = audioCtx.createGain();
       masterGain = audioCtx.createGain();
 
-      // 並列リバーブ設定
+      // 並列リバーブ (ドライ/Wet)
       dryGain.gain.value = 1.0;
       wetGain.gain.value = 0.2;
-      // ★ マスターゲインを2.0に(初期値)
-      masterGain.gain.value = 2.0;
+      masterGain.gain.value = 2.0; // 初期音量を2.0に
 
-      // パラレルルーティング
+      // ルーティング
       sampleNode.connect(dryGain).connect(masterGain);
       sampleNode.connect(reverbNode).connect(wetGain).connect(masterGain);
       masterGain.connect(audioCtx.destination);
 
-      // サンプルロード
+      // サンプルをロードしてAudioWorkletへ
       const loaded = await loadAllSamples();
       sampleNode.port.postMessage({
         type: "loadedSamples",
@@ -197,7 +241,7 @@
       setupVolumeSlider();
     }
 
-    // リバーブIR読み込み
+    // ▼ リバーブIRを読み込む
     async function loadAndSetReverbImpulse() {
       const resp = await fetch(reverbImpulseURL);
       if (!resp.ok) {
@@ -210,7 +254,7 @@
       console.log("リバーブIR読み込み完了にゃ:", reverbNode.buffer);
     }
 
-    // MIDI
+    // ▼ MIDI
     async function startMIDI() {
       const midiAccess = await navigator.requestMIDIAccess();
       for (let input of midiAccess.inputs.values()) {
@@ -226,7 +270,6 @@
         };
       }
     }
-
     function noteOn(noteNumber, velocity) {
       const nearestSampleNote = findNearestSample(noteNumber);
       sampleNode.port.postMessage({
@@ -236,7 +279,6 @@
         nearestNote: nearestSampleNote
       });
     }
-
     function noteOff(noteNumber) {
       sampleNode.port.postMessage({
         type: "noteOff",
@@ -244,7 +286,7 @@
       });
     }
 
-    // サンプルロード
+    // ▼ サンプルをロード (各noteNumber→Float32Array)
     async function loadAllSamples() {
       const samples = {};
       const noteNumbers = Object.keys(sampleNoteMap).map(n => parseInt(n));
@@ -259,7 +301,7 @@
       return samples;
     }
 
-    // sampleMap -> noteNumber
+    // ▼ sampleMap → noteNumber
     function setupSampleMap() {
       for (let key in sampleMap) {
         const nn = noteNameToMidi(key);
@@ -269,7 +311,6 @@
                                 .map(n => parseInt(n))
                                 .sort((a,b)=>a-b);
     }
-
     function findNearestSample(midiNote) {
       let nearest = sortedSampleNotes[0];
       let minDist = Infinity;
@@ -283,13 +324,14 @@
       return nearest;
     }
 
-    // "A4" -> 69
+    // "A4" -> 69 など
     function noteNameToMidi(noteName) {
       const table = {
         "C":0,"C#":1,"Db":1,"D":2,"D#":3,"Eb":3,"E":4,"F":5,"F#":6,"Gb":6,
         "G":7,"G#":8,"Ab":8,"A":9,"A#":10,"Bb":10,"B":11
       };
-      let m = noteName.match(/^([A-G][#s]?)(\d+)/);
+      let m = noteName.match(/^([A-G][#s]?)(\\d+)/);
+      if (!m) m = noteName.match(/^([A-G][#s]?)(\d+)/); // 修正: ¥ じゃなく \
       if (!m) return 60;
       let noteStr = m[1].replace("s","#");
       let octave = parseInt(m[2],10);
@@ -297,13 +339,12 @@
       return semitone + (octave + 1)*12;
     }
 
-    // 音量スライダー (max=3, 初期=2)
+    // ▼ マスター音量スライダー (0→3, 初期2)
     function setupVolumeSlider() {
       const slider = document.getElementById('volumeSlider');
       const label = document.getElementById('volumeValue');
 
-      // 初期表示
-      let val = parseFloat(slider.value); 
+      let val = parseFloat(slider.value);
       label.textContent = val.toFixed(2);
 
       slider.addEventListener('input', () => {
@@ -314,7 +355,6 @@
         label.textContent = val.toFixed(2);
       });
     }
-
   </script>
 </body>
 </html>
