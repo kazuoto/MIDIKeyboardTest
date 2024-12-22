@@ -2,10 +2,10 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>Parallel Reverb + Volume Slider</title>
+  <title>Parallel Reverb + Volume Slider (Fixed)</title>
 </head>
 <body>
-  <h1>並列リバーブ + 音量スライダー (改訂版)にゃ</h1>
+  <h1>並列リバーブ + 音量スライダー (修正版)にゃ</h1>
   
   <!-- 音量調整用スライダー (0～2.0倍にしてる) -->
   <p>
@@ -20,18 +20,18 @@
     /*
       ▼ ポイント
       1) 並列リバーブ (ドライ音 & ウェット音を別ルートで合流)
-      2) マスターゲインを rangeスライダー で操作
-      3) reverbImpulseURL を "https://kazuoto.github.io/MIDIKeyboardTest/SmallRoom.wav" にした
+      2) マスターゲインを rangeスライダー で操作 (文字列→数値化してtoFixed)
+      3) reverbImpulseURL を ユーザーのGitHub上にホストしたものに向ける想定
     */
 
-    // ▼ リバーブIRはユーザーのGitHub上に置いたものを使うにゃ
+    // ▼ リバーブIR (例: あなたのGitHubにあるSmallRoom.wav)
     const reverbImpulseURL = "https://kazuoto.github.io/MIDIKeyboardTest/SmallRoom.wav";
 
-    // ▼ ピアノのサンプル音(複数)を指定 (Salamander Piano)。Tone.jsのCDNにあるにゃ
+    // ▼ ピアノのサンプル音(複数)を指定 (Salamander Piano)
     const sampleMap = {
       "A0": "A0.mp3","C1": "C1.mp3","Ds1": "Ds1.mp3","Fs1": "Fs1.mp3",
       "A1": "A1.mp3","C2": "C2.mp3","Ds2": "Ds2.mp3","Fs2": "Fs2.mp3",
-      "A2": "A2.mp3","C3": "C3.mp3","Ds3": "Ds3.mp3","Fs3.mp3":"Fs3.mp3",
+      "A2": "A2.mp3","C3": "C3.mp3","Ds3": "Ds3.mp3","Fs3": "Fs3.mp3",
       "A3": "A3.mp3","C4": "C4.mp3","Ds4": "Ds4.mp3","Fs4": "Fs4.mp3",
       "A4": "A4.mp3","C5": "C5.mp3","Ds5": "Ds5.mp3","Fs5": "Fs5.mp3",
       "A5": "A5.mp3","C6": "C6.mp3","Ds6": "Ds6.mp3","Fs6": "Fs6.mp3",
@@ -42,7 +42,6 @@
     const baseUrl = "https://tonejs.github.io/audio/salamander/";
 
     // ▼ AudioWorkletでマルチサンプル再生するコード
-    //    (ScriptProcessorより低遅延が期待できるにゃ)
     const workletCode = `
       class MultiSampleProcessor extends AudioWorkletProcessor {
         constructor() {
@@ -129,7 +128,7 @@
       await loadAndSetReverbImpulse();
       await startMIDI();
 
-      alert("並列リバーブ+音量スライダーOKにゃ！試してみてにゃ～🐱");
+      alert("並列リバーブ + 音量スライダー(修正版)にゃ！試してみてにゃ～🐱");
     });
 
     // ▼ AudioWorklet関連の初期化
@@ -149,8 +148,8 @@
 
       // 値を調整
       dryGain.gain.value = 1.0;
-      wetGain.gain.value = 0.3;    // リバーブ少なめにゃ
-      masterGain.gain.value = 1.0; // スライダー初期値と合わせる
+      wetGain.gain.value = 0.2;    // リバーブ少なめにゃ
+      masterGain.gain.value = 1.0; // スライダー初期値(1.0)に合わせる
 
       // パラレルルーティング
       sampleNode.connect(dryGain).connect(masterGain);
@@ -269,13 +268,14 @@
       return semitone + (octave + 1)*12;
     }
 
-    // ▼ マスター音量スライダーのセットアップ
+    // ▼ マスター音量スライダーのセットアップ (文字列→数値変換修正)
     function setupVolumeSlider() {
       const slider = document.getElementById('volumeSlider');
       const label = document.getElementById('volumeValue');
 
       // 初期表示
-      label.textContent = slider.value.toFixed(2);
+      let val = parseFloat(slider.value);  // slider.valueは文字列なのでparseFloat
+      label.textContent = val.toFixed(2);
 
       slider.addEventListener('input', () => {
         const val = parseFloat(slider.value);
